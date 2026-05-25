@@ -30,6 +30,8 @@ import glob
 import vector
 import numpy as np
 import awkward as ak
+
+vector.register_awkward()
 import lightning as L
 import torch
 from torch.utils.data import DataLoader
@@ -38,7 +40,9 @@ from tqdm.auto import tqdm
 
 from mltau.tools.general import reinitialize_p4, one_hot_decoding
 from mltau.tools.io.general import BatchInputs
-from mltau.tools.io.preprocessed_ParTau_dataloader import ParticleTransformerDataset
+from mltau.tools.io import ParT_dataloader as pdl
+from mltau.tools.io import general as ig
+# from mltau.tools.io.preprocessed_ParTau_dataloader import ParticleTransformerDataset
 
 
 # def softmax(x):
@@ -169,19 +173,6 @@ def postprocess_predictions(
     return ret
 
 
-def load_tensors(path):
-    tensors = torch.load(path, weights_only=True)
-    cf = tensors[0].transpose(1, 2)
-    ck = tensors[1].transpose(1, 2)
-    tgt = {k: tensors[2][k] for k in tensors[2]}
-    msk = tensors[3]
-    wt = tensors[4]
-    gt = {k: tensors[5][k] for k in tensors[5]}
-    rc = {k: tensors[6][k] for k in tensors[6]}
-    gj = {k: tensors[7][k] for k in tensors[7]}
-    return cf, ck, tgt, msk, wt, gt, rc, gj
-
-
 def create_predictions_files(
     best_model, cfg: DictConfig, model_name: str, test_only: bool = True
 ):
@@ -194,12 +185,12 @@ def create_predictions_files(
         sample_pattern = "z"
 
     paths_to_process = glob.glob(
-        os.path.join(cfg.dataset.data_dir, f"{sample_pattern}_{split}.pt")
+        os.path.join(cfg.dataset.data_dir, f"{sample_pattern}_{split}.parquet")
     )
     if not paths_to_process:
         print(
             "[WARNING] No input files matched for prediction creation:",
-            os.path.join(cfg.dataset.data_dir, f"{sample_pattern}_{split}.pt"),
+            os.path.join(cfg.dataset.data_dir, f"{sample_pattern}_{split}.parquet"),
         )
         return
     print("[INFO] Prediction inputs:")
@@ -212,12 +203,14 @@ def create_predictions_files(
 def create_predictions_file(
     best_model, input_path: str, model_name: str, cfg: DictConfig
 ):
-    # Load your .pt file and build the dataset
-    tensors = load_tensors(input_path)
-    dataset = ParticleTransformerDataset(
-        tensors,
+    # Load your .parquet file and build the dataset
+    row_groups = ig.get_row_groups([input_path])
+    if cfg.training.debug_run:
+        row_groups = row_groups[:2]
+    dataset = pdl.ParticleTransformerDataset(
+        row_groups=row_groups,
+        cfg=cfg,
         batch_size=cfg.training.dataloader.batch_size,
-        shuffle=False,
     )
     # Create DataLoader
     dataloader = DataLoader(dataset, batch_size=None)

@@ -473,6 +473,18 @@ class ChargeIdEvaluator:
                 wp_mask = self.predicted <= self.wp_neg
             eff_var_denom = var_values[eff_fake_mask[charge]]
             eff_var_num = var_values[wp_mask * eff_fake_mask[charge]]
+            
+            if len(eff_var_denom) == 0:
+                # Return dummy values if empty to avoid crash in debug runs
+                n_bins = metric.n_bins
+                return_values[charge] = (
+                    np.zeros(n_bins),
+                    np.zeros(n_bins),
+                    np.zeros(n_bins),
+                    np.zeros(n_bins),
+                )
+                continue
+
             bin_edges = np.linspace(
                 min(eff_var_denom), max(eff_var_denom), metric.n_bins + 1
             )

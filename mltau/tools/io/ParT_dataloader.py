@@ -31,6 +31,47 @@ class ParticleTransformerDataset(IterableDataset):
     def __len__(self):
         return math.ceil(self.num_rows / self.batch_size)
 
+    def _get_p4(self, data, prefix):
+        """Helper to extract p4 fields regardless of coordinate system (cylindrical or Cartesian)"""
+        if prefix in data.fields:
+            p4_data = data[prefix]
+        elif f"{prefix}s" in data.fields:
+            p4_data = data[f"{prefix}s"]
+        else:
+            raise KeyError(f"Could not find p4 field with prefix {prefix}")
+
+        fields = p4_data.fields
+        if "rho" in fields:
+            # Already cylindrical
+            return (
+                p4_data["rho"],
+                p4_data["eta"],
+                p4_data["phi"],
+                p4_data["t"],
+            )
+        elif "x" in fields:
+            # Cartesian (x, y, z, tau=mass)
+            # Use awkward operations for conversion to avoid vector/multiprocessing issues
+            x = p4_data["x"]
+            y = p4_data["y"]
+            z = p4_data["z"]
+            m = p4_data["tau"]
+            
+            rho = np.sqrt(x**2 + y**2)
+            phi = np.arctan2(y, x)
+            # eta = arcsinh(z/rho)
+            eta = np.arcsinh(z / ak.where(rho > 0, rho, 1e-6))
+            energy = np.sqrt(x**2 + y**2 + z**2 + m**2)
+            
+            return (
+                rho,
+                eta,
+                phi,
+                energy,
+            )
+        else:
+            raise ValueError(f"Unknown p4 coordinate system in {prefix}: {fields}")
+
     def build_tensors(self, data: ak.Array):
         max_cands = self.cfg.dataset.max_cands
         eps = 1e-6
@@ -44,39 +85,60 @@ class ParticleTransformerDataset(IterableDataset):
             ).astype(np.float32)
 
         # ------------------------------------------------------------------
-        # Candidate p4 components: stored as (rho=pt, eta, phi, t=energy)
-        # All other candidate fields — one padded extraction each
+        # Candidate p4 components
         # ------------------------------------------------------------------
-        cand_pt = pad_cand(data.reco_cand_p4s["rho"])  # [N, max_cands]
-        cand_eta = pad_cand(data.reco_cand_p4s["eta"])
-        cand_phi = pad_cand(data.reco_cand_p4s["phi"])
-        cand_en = pad_cand(data.reco_cand_p4s["t"])  # energy
-        cand_charge = pad_cand(data.reco_cand_charges)
-        cand_pdg_abs = pad_cand(abs(data.reco_cand_pdgs))
-        cand_dz = pad_cand(data.reco_cand_dz)
-        cand_dz_err = pad_cand(data.reco_cand_dz_error)
-        cand_dxy = pad_cand(data.reco_cand_dxy)
-        cand_dxy_err = pad_cand(data.reco_cand_dxy_error)
+        cand_pt_jagged, cand_eta_jagged, cand_phi_jagged, cand_en_jagged = self._get_p4(
+            data, "reco_cand_p4"
+        )
+        cand_pt = pad_cand(cand_pt_jagged)
+        cand_eta = pad_cand(cand_eta_jagged)
+        cand_phi = pad_cand(cand_phi_jagged)
+        cand_en = pad_cand(cand_en_jagged)
+
+        # Handle field name variations
+        def get_field(data, names):
+            for name in names:
+                if name in data.fields:
+                    return data[name]
+            return None
+
+        reco_cand_charges = get_field(data, ["reco_cand_charges", "reco_cand_charge"])
+        reco_cand_pdgs = get_field(data, ["reco_cand_pdgs", "reco_cand_pdg"])
+        reco_cand_dz = get_field(data, ["reco_cand_dz"])
+        reco_cand_dz_error = get_field(
+            data, ["reco_cand_dz_error", "reco_cand_dz_err"]
+        )
+        reco_cand_dxy = get_field(data, ["reco_cand_dxy"])
+        reco_cand_dxy_error = get_field(
+            data, ["reco_cand_dxy_error", "reco_cand_dxy_err"]
+        )
+
+        cand_charge = pad_cand(reco_cand_charges)
+        cand_pdg_abs = pad_cand(abs(reco_cand_pdgs))
+        cand_dz = pad_cand(reco_cand_dz)
+        cand_dz_err = pad_cand(reco_cand_dz_error)
+        cand_dxy = pad_cand(reco_cand_dxy)
+        cand_dxy_err = pad_cand(reco_cand_dxy_error)
 
         # Mask: True = real particle, False = padding  [N, max_cands]
-        lengths = np.minimum(ak.to_numpy(ak.num(data.reco_cand_pdgs)), max_cands)
+        lengths = np.minimum(ak.to_numpy(ak.num(reco_cand_pdgs)), max_cands)
         mask_np = np.arange(max_cands)[None, :] < lengths[:, None]
 
-        # Scalar jet p4s — read raw fields directly, no reinitialize_p4
-        jet_pt = ak.to_numpy(data.reco_jet_p4["rho"]).astype(np.float32)  # [N]
-        jet_eta = ak.to_numpy(data.reco_jet_p4["eta"]).astype(np.float32)
-        jet_phi = ak.to_numpy(data.reco_jet_p4["phi"]).astype(np.float32)
-        jet_en = ak.to_numpy(data.reco_jet_p4["t"]).astype(np.float32)
+        # Scalar jet p4s
+        jet_pt, jet_eta, jet_phi, jet_en = [
+            ak.to_numpy(x).astype(np.float32)
+            for x in self._get_p4(data, "reco_jet_p4")
+        ]
 
-        _pt_gen = ak.to_numpy(data.gen_jet_tau_p4["rho"]).astype(np.float32)
-        _eta_gen = ak.to_numpy(data.gen_jet_tau_p4["eta"]).astype(np.float32)
-        _phi_gen = ak.to_numpy(data.gen_jet_tau_p4["phi"]).astype(np.float32)
-        _energy_gen = ak.to_numpy(data.gen_jet_tau_p4["t"]).astype(np.float32)
+        _pt_gen, _eta_gen, _phi_gen, _energy_gen = [
+            ak.to_numpy(x).astype(np.float32)
+            for x in self._get_p4(data, "gen_jet_tau_p4")
+        ]
 
-        _pt_gen_jet = ak.to_numpy(data.gen_jet_p4["rho"]).astype(np.float32)
-        _eta_gen_jet = ak.to_numpy(data.gen_jet_p4["eta"]).astype(np.float32)
-        _phi_gen_jet = ak.to_numpy(data.gen_jet_p4["phi"]).astype(np.float32)
-        _energy_gen_jet = ak.to_numpy(data.gen_jet_p4["t"]).astype(np.float32)
+        _pt_gen_jet, _eta_gen_jet, _phi_gen_jet, _energy_gen_jet = [
+            ak.to_numpy(x).astype(np.float32)
+            for x in self._get_p4(data, "gen_jet_p4")
+        ]
 
         # ------------------------------------------------------------------
         # Compute 17 ParticleTransformer features in numpy (zero awkward)
@@ -158,11 +220,14 @@ class ParticleTransformerDataset(IterableDataset):
         gen_jet_tau_decaymode_exists = torch.from_numpy(
             (gen_jet_tau_decaymode != -1).astype(np.int64)
         )
-        charge_tensor = torch.from_numpy(
-            (ak.to_numpy(data.gen_jet_tau_charge).astype(np.int32) == 1).astype(
-                np.float32
+        if "gen_jet_tau_charge" in data.fields:
+            charge_tensor = torch.from_numpy(
+                (ak.to_numpy(data.gen_jet_tau_charge).astype(np.int32) == 1).astype(
+                    np.float32
+                )
             )
-        )
+        else:
+            charge_tensor = torch.zeros(len(data), dtype=torch.float32)
 
         # ------------------------------------------------------------------
         # Kinematics regression targets (pure numpy, no reinitialize_p4)
@@ -236,28 +301,41 @@ class ParticleTransformerDataset(IterableDataset):
             row_groups_end = row_groups_start + per_worker
             row_groups_to_process = self.row_groups[row_groups_start:row_groups_end]
 
-        # Only load columns actually used by build_tensors
-        _NEEDED_COLUMNS = [
-            "reco_cand_p4s",
-            "reco_cand_charges",
-            "reco_cand_pdgs",
+        # Define all possible columns we might need across different dataset versions
+        _POTENTIAL_COLUMNS = [
+            "reco_cand_p4", "reco_cand_p4s",
+            "reco_cand_charge", "reco_cand_charges",
+            "reco_cand_pdg", "reco_cand_pdgs",
             "reco_cand_dz",
-            "reco_cand_dz_error",
+            "reco_cand_dz_err", "reco_cand_dz_error",
             "reco_cand_dxy",
-            "reco_cand_dxy_error",
-            "reco_jet_p4",
-            "gen_jet_tau_p4",
-            "gen_jet_p4",
+            "reco_cand_dxy_err", "reco_cand_dxy_error",
+            "reco_jet_p4", "reco_jet_p4s",
+            "gen_jet_tau_p4", "gen_jet_tau_p4s",
+            "gen_jet_p4", "gen_jet_p4s",
             "gen_jet_tau_decaymode",
             "gen_jet_tau_charge",
             "cls_weight",
         ]
 
+        # Cache fields for each filename to avoid repeated heavy I/O
+        file_fields_cache = {}
+
+        import gc
+
         for row_group in row_groups_to_process:
+            if row_group.filename not in file_fields_cache:
+                # Use ak.from_parquet with first row_group to just get the fields
+                tmp_data = ak.from_parquet(row_group.filename, row_groups=[0])
+                file_fields_cache[row_group.filename] = tmp_data.fields
+            
+            file_fields = file_fields_cache[row_group.filename]
+            columns_to_load = [c for c in _POTENTIAL_COLUMNS if c in file_fields]
+
             data = ak.from_parquet(
                 row_group.filename,
                 row_groups=[row_group.row_group],
-                columns=_NEEDED_COLUMNS,
+                columns=columns_to_load,
             )
             tensors = self.build_tensors(data)
             N = tensors[0].shape[0]
@@ -275,6 +353,11 @@ class ParticleTransformerDataset(IterableDataset):
                     {k: v[start:end] for k, v in tensors[6].items()},  # reco_jet_p4s
                     {k: v[start:end] for k, v in tensors[7].items()},  # gen_jet_p4s
                 )
+            
+            # Explicitly delete to help GC
+            del data
+            del tensors
+            gc.collect()
 
 
 class ParTDataModule(LightningDataModule):
@@ -301,7 +384,7 @@ class ParTDataModule(LightningDataModule):
         self.test_dataset = None
         self.train_dataset = None
         self.val_dataset = None
-        self.num_row_groups = 2 if debug_run else None
+        self.num_row_groups = 10 if debug_run else None
         self.save_hyperparameters()
         super().__init__()
 
@@ -313,6 +396,8 @@ class ParTDataModule(LightningDataModule):
             test_paths = list(glob.glob(test_paths_wcp))
             test_rowgroups = ig.get_row_groups(input_paths=test_paths)
             np.random.shuffle(test_rowgroups)
+            if self.num_row_groups:
+                test_rowgroups = test_rowgroups[: self.num_row_groups]
             return test_rowgroups
         elif dataset_type == "train":
             total = sum(
@@ -331,6 +416,8 @@ class ParTDataModule(LightningDataModule):
             train_paths = list(glob.glob(train_paths_wcp))
             all_train_rowgroups = ig.get_row_groups(input_paths=train_paths)
             np.random.shuffle(all_train_rowgroups)
+            if self.num_row_groups:
+                all_train_rowgroups = all_train_rowgroups[: self.num_row_groups]
             n_train_rowgroups = int(len(all_train_rowgroups) * fractions["train"])
             train_rowgroups = all_train_rowgroups[:n_train_rowgroups]
             val_rowgroups = all_train_rowgroups[n_train_rowgroups:]
@@ -357,42 +444,68 @@ class ParTDataModule(LightningDataModule):
             self.train_loader = DataLoader(
                 self.train_dataset,
                 batch_size=None,
-                persistent_workers=False if self.debug_run else True,
+                persistent_workers=(
+                    False
+                    if (
+                        self.debug_run
+                        or self.cfg.training.dataloader.num_dataloader_workers == 0
+                    )
+                    else True
+                ),
                 num_workers=(
                     0
                     if self.debug_run
                     else self.cfg.training.dataloader.num_dataloader_workers
                 ),
                 multiprocessing_context=(
-                    "forkserver"
-                    if self.cfg.training.dataloader.num_dataloader_workers > 1
-                    else None
+                    None
+                    if (
+                        self.debug_run
+                        or self.cfg.training.dataloader.num_dataloader_workers <= 1
+                    )
+                    else None  # Using None to default to 'fork' on Linux
                 ),
                 prefetch_factor=(
-                    None
-                    if self.debug_run
-                    else self.cfg.training.dataloader.prefetch_factor
+                    self.cfg.training.dataloader.prefetch_factor
+                    if (
+                        not self.debug_run
+                        and self.cfg.training.dataloader.num_dataloader_workers > 0
+                    )
+                    else None
                 ),
                 pin_memory=True,
             )
             self.val_loader = DataLoader(
                 self.val_dataset,
                 batch_size=None,
-                persistent_workers=False if self.debug_run else True,
+                persistent_workers=(
+                    False
+                    if (
+                        self.debug_run
+                        or self.cfg.training.dataloader.num_dataloader_workers == 0
+                    )
+                    else True
+                ),
                 num_workers=(
                     0
                     if self.debug_run
                     else self.cfg.training.dataloader.num_dataloader_workers
                 ),
                 multiprocessing_context=(
-                    "forkserver"
-                    if self.cfg.training.dataloader.num_dataloader_workers > 1
-                    else None
+                    None
+                    if (
+                        self.debug_run
+                        or self.cfg.training.dataloader.num_dataloader_workers <= 1
+                    )
+                    else None  # Using None to default to 'fork' on Linux
                 ),
                 prefetch_factor=(
-                    None
-                    if self.debug_run
-                    else self.cfg.training.dataloader.prefetch_factor
+                    self.cfg.training.dataloader.prefetch_factor
+                    if (
+                        not self.debug_run
+                        and self.cfg.training.dataloader.num_dataloader_workers > 0
+                    )
+                    else None
                 ),
                 pin_memory=True,
             )

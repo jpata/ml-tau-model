@@ -165,6 +165,17 @@ class TaggerEvaluator:
             var_values = np.rad2deg(var_values)
         eff_var_denom = var_values[self.eff_denominator_mask]
         eff_var_num = var_values[medium_wp_mask * self.eff_numerator_mask]
+        
+        if len(eff_var_denom) == 0:
+            # Return dummy values if empty to avoid crash in debug runs
+            n_bins = metric.n_bins
+            return (
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+            )
+
         bin_edges = np.linspace(
             min(eff_var_denom), max(eff_var_denom), metric.n_bins + 1
         )
@@ -185,6 +196,17 @@ class TaggerEvaluator:
             var_values = np.rad2deg(var_values)
         fake_var_denom = var_values[self.fake_denominator_mask]
         fake_var_num = var_values[medium_wp_mask * self.fake_numerator_mask]
+        
+        if len(fake_var_denom) == 0:
+            # Return dummy values if empty to avoid crash in debug runs
+            n_bins = metric.n_bins
+            return (
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+                np.zeros(n_bins),
+            )
+
         bin_edges = np.linspace(
             min(fake_var_denom), max(fake_var_denom), metric.n_bins + 1
         )

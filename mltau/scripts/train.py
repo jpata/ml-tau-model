@@ -2,18 +2,22 @@ import os
 import hydra
 import lightning as L
 import numpy as np
+import torch
 
-from omegaconf import DictConfig
+from omegaconf import DictConfig, ListConfig
+from omegaconf.base import Metadata, ContainerMetadata
 from lightning.pytorch.loggers import TensorBoardLogger  # , CometLogger
 from lightning.pytorch.callbacks import TQDMProgressBar, ModelCheckpoint
 
-from mltau.tools.io import preprocessed_ParTau_dataloader as dl
+from mltau.tools.io import ParT_dataloader as dl
 from mltau.models import MultiParTau_module, SingleParTau_module
 from mltau.tools.evaluation import inference
 
 
 @hydra.main(config_path="../config", config_name="main", version_base=None)
 def train(cfg: DictConfig):
+    torch.serialization.add_safe_globals([DictConfig, ListConfig, Metadata, ContainerMetadata, list, dict])
+    torch.set_float32_matmul_precision("high")
     datamodule = dl.ParTDataModule(cfg=cfg, debug_run=cfg.training.debug_run)
     model_name = cfg.training.model.name
     if model_name == "MultiParTau":
@@ -71,7 +75,7 @@ def train(cfg: DictConfig):
         # Reload the best model
         if model_name == "MultiParTau":
             best_model = MultiParTau_module.ParTauModule.load_from_checkpoint(
-                best_ckpt_path, cfg=cfg, input_dim=17, num_dm_classes=6
+                best_ckpt_path, cfg=cfg, input_dim=17, num_dm_classes=6, weights_only=False
             )
         elif model_name == "SingleParTau":
             best_model = SingleParTau_module.ParTauModule.load_from_checkpoint(
@@ -80,6 +84,7 @@ def train(cfg: DictConfig):
                 input_dim=17,
                 num_dm_classes=6,
                 task=cfg.training.model.task,
+                weights_only=False,
             )
         else:
             raise ValueError(f"Unknown model '{model_name}' for prediction.")

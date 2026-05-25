@@ -277,6 +277,7 @@ class ParTauModule(L.LightningModule):
         tb_logger,
         current_epoch,
         dataset,
+        baseline_charges=None,
     ):
         kwargs = dict(
             targets=targets,
@@ -299,6 +300,7 @@ class ParTauModule(L.LightningModule):
                 reco_jet_p4s=reco_jet_p4s,
                 cfg=self.cfg,
                 dataset=dataset,
+                baseline_charges=baseline_charges,
                 **kwargs,
             )
         elif self.task == "decay_mode":

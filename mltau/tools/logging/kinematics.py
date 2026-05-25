@@ -262,7 +262,7 @@ def log_all_kinematics_metrics(
 
     # --- deltaR (predicted tau vs gen_tau, binned by true pT) ---
     gen_tau = reinitialize_p4(gen_jet_tau_p4s)[signal_mask]
-    dphi_dr = np.array(pred_phi_rad) - np.array(gen_tau.phi)
+    dphi_dr = np.array(pred_phi) - np.array(gen_tau.phi)
     dphi_dr = np.arctan2(np.sin(dphi_dr), np.cos(dphi_dr))
     deltaR = np.sqrt((np.array(pred_eta) - np.array(gen_tau.eta)) ** 2 + dphi_dr**2)
 

@@ -1,6 +1,6 @@
 dataset:
   max_cands: 20
-  data_dir: /scratch/persistent/laurits/ml-tau/0412_increased_stats/
+  data_dir: ../ml-tau-reco/data/raw/
   relative_sizes:
     train: 0.7
     val: 0.1
